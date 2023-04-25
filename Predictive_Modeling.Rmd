@@ -1,0 +1,240 @@
+---
+title: "Catalog Sales Prediction"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(caret)
+library(leaps)
+library(MASS)
+library(dplyr)
+library(DMwR)
+library(car)
+library(caret)
+library(mice)
+library(tidyr)
+library(pROC)
+library(ROCR)
+```
+
+
+## set up
+```{r}
+## load data
+data = read.csv('data/preprocessed_data.csv')
+```
+
+
+```{r}
+# train test split
+train_all = data[data$train == 1, ]
+test = data[data$train != 1,]
+```
+
+```{r}
+# drop id, train, targdol 
+train_all = subset(train_all, select = - c(id, train, targdol, datelp6))
+train_all = subset(train_all, select = - c(falord))
+```
+
+```{r}
+train_all$slstyr = log(train_all$slstyr+1) 
+train_all$slslyr = log(train_all$slslyr+1)
+train_all$sls2ago = log(train_all$sls2ago+1)
+train_all$sls3ago = log(train_all$sls3ago+1)
+train_all$slshist = log(train_all$slshist+1)
+```
+
+```{r}
+# correlation matrix
+round(cor(subset(train_all, select = - c(lpurseason))), 2)
+```
+
+```{r}
+# factor variables
+train_all$lpurseason = factor(train_all$lpurseason)
+```
+
+
+```{r}
+fit1 = glm(respond ~ .,  data = train_all, family = binomial)
+summary(fit1)
+```
+
+```{r}
+step(fit1,direction="backward")
+```
+
+```{r}
+test$slstyr = log(test$slstyr+1) 
+test$slslyr = log(test$slslyr+1)
+test$sls2ago = log(test$sls2ago+1)
+test$sls3ago = log(test$sls3ago+1)
+test$slshist = log(test$slshist+1)
+```
+
+
+```{r}
+fit = glm(formula = respond ~ lpuryear + slstyr + slslyr + sls2ago + 
+    sls3ago + slshist + ordtyr + ord2ago + ord3ago + ordhist + 
+    sprord + lpurseason + datead6_year, family = binomial, data = train_all)
+```
+
+```{r}
+vif(fit)
+```
+
+
+```{r}
+train_pred = fitted(fit)
+test_pred = predict(fit, newdata = test, type = 'response')
+
+p_star = seq(0,1,by=0.01)
+CCR = numeric(length(p_star))
+for (i in 1:length(p_star)) {
+  tab = table(test$respond, test_pred>p_star[i])
+  CCR[i] = sum(diag(tab))/sum(tab)
+}
+
+cutoff = p_star[which(CCR == max(CCR))]
+optCCR = CCR[which(CCR == max(CCR))]
+cat("Optimal cutoff value is", cutoff, "\n")
+cat("Optimal CCR is", optCCR, "\n")
+
+confusionMatrix(factor(test$respond), factor(as.integer(test_pred>cutoff)))
+
+cat("Optimal CCR is", optCCR, "\n")
+F1_score = F_meas(factor(as.integer(test_pred>cutoff)), 
+       reference = as.factor(test$respond), relevant = "1")
+cat("F1 score is", F1_score, "\n")
+```
+
+## ROC Curve
+```{r}
+# Create a ROC curve
+pred <- prediction(test_pred, test$respond) 
+acc <- performance(pred, "acc")
+plot(acc)
+#auc(test$respond, test_pred)
+```
+
+```{r}
+roc_curve <- performance(pred, "tpr", "fpr") 
+plot(roc_curve, colorize = T, main = "ROC Curve") 
+abline(a = 0, b = 1)
+```
+
+#### Multiple Linear Regression
+```{r}
+data = mutate(data, avg_spend_hist = slshist/ordhist) %>%
+    mutate(avg_spend_hist = ifelse((is.na(avg_spend_hist) | is.infinite(avg_spend_hist)), 0, avg_spend_hist))
+
+data = mutate(data, avg_spend_tyr = slstyr/ordtyr) %>%
+    mutate(avg_spend_tyr = ifelse((is.na(avg_spend_tyr) | is.infinite(avg_spend_tyr)), 0, avg_spend_tyr))
+
+data = mutate(data, avg_spend_lyr = slslyr/ordlyr) %>%
+    mutate(avg_spend_lyr = ifelse((is.na(avg_spend_lyr) | is.infinite(avg_spend_lyr)), 0, avg_spend_lyr))
+
+
+data = mutate(data, avg_spend_2ago = sls2ago/ord2ago) %>%
+    mutate(avg_spend_2ago = ifelse((is.na(avg_spend_2ago) | is.infinite(avg_spend_2ago)), 0, avg_spend_2ago))
+
+data = mutate(data, avg_spend_3ago = sls3ago/ord3ago) %>%
+    mutate(avg_spend_3ago = ifelse((is.na(avg_spend_3ago) | is.infinite(avg_spend_3ago)), 0, avg_spend_3ago))
+```
+
+```{r}
+#split train and test by the column train
+train = data[data$train==1, ] 
+test = data[data$train==0, ]
+```
+
+```{r}
+head(train)
+```
+
+```{r}
+# only select those with target>0 as the response for regression model
+train = train[train$targdol>0,]
+```
+
+```{r}
+# drop columns used for spliting train and test
+train = subset(train, select=-c(id, respond,train, datelp6, slshist, ordhist, slstyr, ordtyr, slslyr, ordlyr, sls2ago, ord2ago, sls3ago, ord3ago))
+test = subset(test, select=-c(id, respond,train,datelp6, slshist, ordhist, slstyr, ordtyr, slslyr, ordlyr, sls2ago, ord2ago, sls3ago, ord3ago))
+```
+
+```{r}
+for (col in colnames(train)[-c(1,2,5,6)]){
+  train[[col]] = log(train[[col]]+1)
+  test[[col]] = log(test[[col]]+1)
+}
+```
+
+```{r}
+fit1 = lm(targdol~., data=train)
+# check assumptions
+plot(fit1)
+```
+
+Normality is not met. By the Q-Q plot, a log transformation seems to be appropriate.
+
+```{r}
+fit2 = lm(log(train$targdol)~., data=train)
+plot(fit2)
+summary(fit2)
+```
+
+```{r}
+library(car)
+#compare avplot and crplots, and no quadratic terms are needed
+for (col in colnames(train)[-c(1,5)]){
+  avPlot(fit2, col)
+  crPlots(fit2, col)
+}
+```
+
+```{r}
+fit3 = lm(log(train$targdol)~.^2, data=train)
+plot(fit3)
+summary(fit3)
+```
+
+```{r}
+fit4 = step(fit3)
+plot(fit4)
+summary(fit4)
+```
+
+```{r}
+#detect outliers
+droprows = which(abs(rstandard(fit4))>3)
+droprows
+```
+
+```{r}
+train.dropout = train[!(row.names(train) %in% names(droprows)),]
+fit5 = lm(log(targdol) ~ lpuryear + falord + sprord + 
+    lpurseason + datead6_year + avg_spend_hist + avg_spend_tyr + 
+    avg_spend_lyr + avg_spend_2ago + avg_spend_3ago + lpuryear:sprord + 
+    lpuryear:datead6_year + lpuryear:avg_spend_tyr + falord:avg_spend_tyr + 
+    falord:avg_spend_lyr + falord:avg_spend_2ago + falord:avg_spend_3ago + 
+    sprord:lpurseason + sprord:avg_spend_lyr + lpurseason:avg_spend_hist + 
+    lpurseason:avg_spend_tyr + lpurseason:avg_spend_lyr + datead6_year:avg_spend_2ago + 
+    avg_spend_hist:avg_spend_tyr + avg_spend_hist:avg_spend_lyr + 
+    avg_spend_hist:avg_spend_2ago + avg_spend_hist:avg_spend_3ago + 
+    avg_spend_tyr:avg_spend_lyr + avg_spend_tyr:avg_spend_2ago + 
+    avg_spend_lyr:avg_spend_2ago + avg_spend_2ago:avg_spend_3ago, data=train.dropout)
+plot(fit5)
+summary(fit5)
+```
+
+```{r}
+pred = exp(predict(fit5,newdata=test))
+pred_test<-pred * test_pred
+RMSE(pred_test, test$targdol)^2
+#index = which(test$targdol>0)
+#pred_test[index]-test$targdol[index]
+```

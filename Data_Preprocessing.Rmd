@@ -1,0 +1,144 @@
+---
+title: "Data Preprocessing"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+A retail company sells upscale clothing on its website and via catalogs, which helps drive customers to the website. All customers were sent a catalog mailing in early fall 2012 and purchases made by them during fall 2012 were recorded. There is one row for each customer.
+
+The *targdol* is the response variable, which is the purchase amount during fall 2012; *targdol* = 0 means the customer did not make a purchase. Other variables are potential predictor variables which give information about the customer as of the time of the mailing.
+
+The goal is to build a predictive model for responders to a similar promotion in future and how much they will buy. The purpose of the model is primarily prediction but it is also of interest to learn which are the most important predictors. The model is also intended to choose a subset of customers to be targeted in the future promotions.
+
+Initial idea: first treat targdol as a categorical variable and do classification. For records that are predicted as 1 (made a purchase), use regression model.
+
+### Recency = today_date() - datelp6
+
+## Loading required libraries
+```{r, message=FALSE}
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+library(scales)
+library(mice)
+```
+
+## Data cleaning and preprocessing
+
+```{r}
+# read in data
+data = read.csv("data/sales_data.csv", stringsAsFactors=FALSE)
+train = data[data$train==1, ] # 51114 obs
+test = data[data$train==0, ] # 50418
+
+#nrow(data[data$datelp6=='1/1/1980',])
+```
+
+### Data manipulation
+Convert variables `datead6` and `datelp6` into datetime format
+```{r}
+data = data %>% mutate(datead6 = mdy(datead6), datelp6 = mdy(datelp6))
+#data[year(data$datelp6)==1980,]
+#data = data[year(data$datelp6)!=1980,]
+data
+```
+
+
+
+```{r}
+data_pur = data[data$targdol>0, ]
+# data_pur %>% group_by(datelp6) %>% summarize(n=n()) %>% arrange(desc(n)) %>% top_n(10)
+# Last purchase occurs mainly on 11/15 and 3/1 in each year.
+ggplot(data=data_pur, aes(x=datelp6)) + geom_histogram(binwidth = 30) + labs(title="Histogram of date of last purchase", x="Date", y="Count")
+#+ theme(axis.text.x = element_text(angle=90))
+```
+
+
+### Variable creation 
+```{r}
+# add a unique id column for each customer
+data = data %>% mutate(id = as.integer(row.names(data)))
+
+# add respond variable to indicate whether the customer responded (purchased) or not
+data = data %>% mutate(respond = ifelse(targdol>0, 1, 0)) %>% mutate(respond = factor(respond))
+```
+
+```{r}
+summary(data$respond)
+```
+
+### Fix inconsistencies in the data
+#### Manipulate datelp6
+Create a new variable `lpurseason`: 'spr' if the last day of purchase is before June, and 'fal' otherwise.
+```{r}
+data = data %>% mutate(lpurseason = ifelse(month(data$datelp6)<6, 'spr', 'fal')) %>% mutate(lpurseason = factor(lpurseason))
+head(data[data$targdol>0, ])
+```
+
+#### Update ordhis ??
+If `falord` + `sprord` are not equal to `ordhis`, update `ordhis` to be the sum of `falord` and `sprord`.
+ -- ordhis > falord + sprord, update falord or sprord according to the value of lpurseason(??)
+```{r}
+data = data %>% mutate(ordhist = ifelse(ordhist != falord + sprord, falord + sprord, ordhist))
+#data[data$ordhist > data$falord + data$sprord,]
+```
+
+
+#### Filling NAs in lpuryear
+For non NA values, compare lpuryear with year extracted from datelp6 with, and update one of them with the larger value.
+Updating NA values of lpuryear with the year extracted from datelp6.
+```{r}
+# lpuryear has 728 NA values, and its values range from 0 to 9
+data$datelp6_year = year(data$datelp6) # 1980 & 2002-2012
+data[!is.na(data$lpuryear),]$lpuryear = ifelse(data[!is.na(data$lpuryear),]$lpuryear<3, as.integer(paste0('201',as.character(data[!is.na(data$lpuryear),]$lpuryear))), as.integer(paste0('200',as.character(data[!is.na(data$lpuryear),]$lpuryear))))
+data[is.na(data$lpuryear),]$lpuryear = data[is.na(data$lpuryear),]$datelp6_year
+#data %>% group_by(datelp6_year) %>% summarize(n=n())
+data[data$lpuryear < data$datelp6,]$lpuryear <- data[data$lpuryear < data$datelp6,]$datelp6_year
+data = data %>% select(-datelp6_year)
+head(data)
+```
+
+#### ordtyr targdol mismatch 
+In a few cases, the number of orders are not recorded but there are purchase amounts. For these cases, increase number of orders (ordtyr) by 1.
+targdol purchase amount during fall 2012
+```{r}
+sum(data[data$ordtyr == 0,]$targdol != 0)
+
+
+for (i in 1:nrow(data)) {
+  if (data[i, "ordtyr"] == 0 & data[i, "targdol"] != 0) {
+    data[i, "ordtyr"] = 1
+  }
+}
+
+sum(data[data$ordtyr == 0,]$targdol != 0)
+
+```
+
+
+#### datelp6 datead6 mismatch
+If we consider datead6 as the datetime customer purchase behavior enter the system, so it should not be after datelp6.
+First set invalid year of datead6 to NA, and use mice to impute them.
+```{r}
+#data[data$datead6 > data$datelp6, ]
+#data[data$datead6 <= data$datelp6, ]
+
+data[data$datead6>data$datelp6,]$datead6 = NA
+data$datead6_year = year(data$datead6)
+data = data[,-2] # drop datead6
+
+#data[is.na(data$datead6),]
+#data[!is.na(data$datead6), ]
+
+
+imputed = complete(mice(data, method="pmm", seed=123))
+#imputed[is.na(data$datead6_year), ]
+
+imputed$datead6_year = ifelse(imputed$sls3ago>0 & imputed$sls2ago==0 & imputed$slslyr==0, 2008, ifelse(imputed$sls2ago>0 & imputed$sls3ago==0 & imputed$slslyr==0, 2009, ifelse(imputed$slslyr>0 & imputed$sls2ago==0 & imputed$sls3ago==0, 2010, imputed$datead6_year)))
+imputed[imputed$datead6_year > year(data$datelp6), ]$datead6_year = imputed[imputed$datead6_year > year(data$datelp6), ]$lpuryear
+
+write.csv(imputed, "preprocessed_data.csv", row.names = FALSE)
+```
+After imputation, we still get 60 inconsistent rows with datead6_year > lpuryear. We choose to replace `datead6_year` with smaller value of `lpuryear` and 2011 - slslyr/sls2ago/sls3ago.
