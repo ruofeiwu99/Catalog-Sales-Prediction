@@ -12,3 +12,4 @@ For the classification model, we found that the most important factor in predict
 With the classification model, the company can identify its target customers (those with predicted value = 1) and advertise products based on the prediction results. 
 For the regression model, we found that the most important factor in predicting the expected purchase value during fall 2012 is **the number of orders three years ago**. 
 With the regression model, the company can get a baseline of their potential revenues and make financial arrangements based on the prediction.
+
